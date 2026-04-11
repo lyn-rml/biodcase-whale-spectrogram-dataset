@@ -1,8 +1,11 @@
 biodcase_development_set
 debug_specs
-spectrograms*
+spectrogram*
 waves
 aa.wav
-task2_figure1.png
 test.ipynb
+task2_figure1.png
 test.py
+temp.py
+.codex
+__pycache__
