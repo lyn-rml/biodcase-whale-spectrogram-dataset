@@ -8,3 +8,6 @@ task2_figure1.png
 temp.py
 .codex
 __pycache__
+preprocessed
+output.txt
+

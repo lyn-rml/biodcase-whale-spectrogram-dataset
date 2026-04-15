@@ -1,12 +1,14 @@
+import csv
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib import mlab
 from scipy.io import wavfile
 
 
 WAV_DIR = Path("./waves")
-OUTPUT_DIR = Path("./spectrograms")
+ARRAY_OUTPUT_PATH = Path("./spectrograms_arrays.npy")
+INDEX_OUTPUT_PATH = Path("./spectrograms_arrays_index.csv")
 
 NFFT = 512
 WINSIZE = 256
@@ -26,12 +28,12 @@ def convert_wav_to_float(data: np.ndarray) -> np.ndarray:
 
 
 def parse_filename(stem: str) -> tuple[str, float, float]:
-    """Expected pattern: <label>_<low_freq>_<high_freq>.wav"""
+    """Expected pattern: <label>_<low_freq>_<high_freq>_<index>.wav"""
     parts = stem.split("_")
     if len(parts) != 4:
         raise ValueError(f"Unexpected filename format: {stem}")
 
-    label, low_str, high_str, index= parts
+    label, low_str, high_str, _ = parts
     return label, float(low_str), float(high_str)
 
 
@@ -39,48 +41,102 @@ def load_wav_mono(path: Path) -> tuple[int, np.ndarray]:
     sample_rate, data = wavfile.read(path)
     data = convert_wav_to_float(data)
 
-    # Convert multi-channel WAV to mono for a single spectrogram image.
     if data.ndim > 1:
         data = data.mean(axis=1)
 
     return sample_rate, data
 
 
-def save_spectrogram(wav_path: Path) -> None:
-    _, low_freq, high_freq = parse_filename(wav_path.stem)
-    sample_rate, signal = load_wav_mono(wav_path)
-
+def compute_spectrogram_array(signal: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Keep spectrogram math aligned with matplotlib.specgram settings:
+    nfft=512 | winsize=256 | overlap=98 | scale=default.
+    """
     noverlap = int(round(WINSIZE * (OVERLAP_PERCENT / 100.0)))
     noverlap = min(noverlap, WINSIZE - 1)
 
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.specgram(
-        signal,
+    power, freqs, times = mlab.specgram(
+        x=signal,
         NFFT=WINSIZE,
         Fs=sample_rate,
         noverlap=noverlap,
         pad_to=NFFT,
-        scale=SCALE,
-        cmap="cividis",
     )
+
+    if SCALE == "default" or SCALE == "dB":
+        # "default" uses dB for PSD spectrograms.
+        power = 10.0 * np.log10(np.maximum(power, np.finfo(np.float32).tiny))
+
+    return (
+        power.astype(np.float32, copy=False),
+        freqs.astype(np.float32, copy=False),
+        times.astype(np.float32, copy=False),
+    )
+
+
+def append_event_arrays(
+    stream_file,
+    csv_writer: csv.writer,
+    record_index: int,
+    wav_path: Path,
+) -> None:
+    label, low_freq, high_freq = parse_filename(wav_path.stem)
+    sample_rate, signal = load_wav_mono(wav_path)
+    spectrogram, freqs, times = compute_spectrogram_array(signal, sample_rate)
 
     low = min(low_freq, high_freq)
     high = max(low_freq, high_freq)
-    ax.set_ylim(low, high)
-    ax.set_axis_off()
-    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
-    ax.set_position([0, 0, 1, 1])
+    band_mask = (freqs >= low) & (freqs <= high)
+    spectrogram = spectrogram[band_mask, :]
+    freqs = freqs[band_mask]
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_path = OUTPUT_DIR / f"{wav_path.stem}.png"
-    fig.savefig(output_path, dpi=300, bbox_inches="tight", pad_inches=0)
-    plt.close(fig)
+    spec_offset = stream_file.tell()
+    np.save(stream_file, spectrogram, allow_pickle=False)
+    freq_offset = stream_file.tell()
+    np.save(stream_file, freqs, allow_pickle=False)
+    time_offset = stream_file.tell()
+    np.save(stream_file, times, allow_pickle=False)
+
+    csv_writer.writerow(
+        [
+            record_index,
+            wav_path.name,
+            label,
+            low,
+            high,
+            sample_rate,
+            spectrogram.shape[0],
+            spectrogram.shape[1],
+            spec_offset,
+            freq_offset,
+            time_offset,
+        ]
+    )
 
 
 def main() -> None:
     wav_files = sorted(WAV_DIR.glob("*.wav"))
-    for wav_path in wav_files:
-        save_spectrogram(wav_path)
+
+    with ARRAY_OUTPUT_PATH.open("wb") as stream_file, INDEX_OUTPUT_PATH.open("w", newline="") as index_file:
+        writer = csv.writer(index_file)
+        writer.writerow(
+            [
+                "record_index",
+                "wav_filename",
+                "label",
+                "low_frequency",
+                "high_frequency",
+                "sample_rate",
+                "n_frequency_bins",
+                "n_time_bins",
+                "spectrogram_offset",
+                "frequencies_offset",
+                "times_offset",
+            ]
+        )
+
+        for record_index, wav_path in enumerate(wav_files):
+            append_event_arrays(stream_file, writer, record_index, wav_path)
 
 
 if __name__ == "__main__":
@@ -88,8 +144,8 @@ if __name__ == "__main__":
 
 # Summary:
 # - Iterates over every WAV in ./waves.
-# - Parses filename as <label>_<low_freq>_<high_freq>.wav.
+# - Parses filename as <label>_<low_freq>_<high_freq>_<index>.wav.
 # - Builds one spectrogram per WAV using nfft=512, winsize=256, overlap=98, scale=default.
-# - Uses the parsed low/high frequencies as the y-axis limits.
-# - Removes titles/labels/axes so each output image is a clean spectrogram only.
-# - Saves each image to ./spectrograms with the same base filename and .png extension.
+# - Crops each spectrogram to its filename low/high frequency band.
+# - Appends spectrogram/frequency/time arrays into one NumPy binary stream: ./spectrograms_arrays.npy
+# - Writes an index CSV (offsets + metadata) to ./spectrograms_arrays_index.csv for retrieval.
