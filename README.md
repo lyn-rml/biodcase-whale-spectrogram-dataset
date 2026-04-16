@@ -1,1 +1,0 @@
-# biodcase-whale-spectrogram-dataset

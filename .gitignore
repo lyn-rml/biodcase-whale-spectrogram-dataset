@@ -1,13 +1,3 @@
-biodcase_development_set
-debug_specs
-spectrogram*
-waves
-aa.wav
-test.ipynb
-task2_figure1.png
-temp.py
-.codex
 __pycache__
-preprocessed
-output.txt
-
+biodcase_development_set
+spectrograms
