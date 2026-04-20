@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +11,16 @@ try:
     from torch.utils.data import DataLoader, Dataset
 except ImportError as exc:
     raise ImportError("PyTorch is not installed in this environment.") from exc
+
+# Hardcoded execution constants
+PREPROC_DIR = Path("preprocessed")
+MODEL_PATH = Path("preprocessed/mlp_whale_classifier.pt")
+BATCH_SIZE = 128
+EPOCHS = 15
+LEARNING_RATE = 1e-3
+HIDDEN_1 = 256
+HIDDEN_2 = 128
+SEED = 42
 
 
 class SpectrogramDataset(Dataset):
@@ -53,29 +62,13 @@ def compute_class_weights(y: np.ndarray, num_classes: int) -> np.ndarray:
     return class_counts.sum() / (num_classes * class_counts.astype(np.float64))
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train MLP classifier with class-weighted cross-entropy.")
-    parser.add_argument("--preproc-dir", type=Path, default=Path("preprocessed"))
-    parser.add_argument("--model-path", type=Path, default=Path("preprocessed/mlp_whale_classifier.pt"))
-
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--epochs", type=int, default=8)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
-    parser.add_argument("--hidden-1", type=int, default=256)
-    parser.add_argument("--hidden-2", type=int, default=128)
-    parser.add_argument("--seed", type=int, default=42)
-    return parser.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
+    torch.manual_seed(SEED)
+    np.random.seed(SEED)
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-
-    x_path = args.preproc_dir / "X_normalized.npy"
-    y_path = args.preproc_dir / "y_labels.npy"
-    label_names_path = args.preproc_dir / "label_names.npy"
+    x_path = PREPROC_DIR / "X_normalized.npy"
+    y_path = PREPROC_DIR / "y_labels.npy"
+    label_names_path = PREPROC_DIR / "label_names.npy"
 
     for path in [x_path, y_path, label_names_path]:
         if not path.exists():
@@ -98,7 +91,7 @@ def main() -> None:
     dataset = SpectrogramDataset(X, y)
     loader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=BATCH_SIZE,
         shuffle=True,
         num_workers=0,
         pin_memory=(device.type == "cuda"),
@@ -107,8 +100,8 @@ def main() -> None:
     model = MLPClassifier(
         in_features=input_dim,
         out_classes=num_classes,
-        hidden_1=args.hidden_1,
-        hidden_2=args.hidden_2,
+        hidden_1=HIDDEN_1,
+        hidden_2=HIDDEN_2,
     ).to(device)
 
     class_weights_np = compute_class_weights(y, num_classes)
@@ -120,9 +113,9 @@ def main() -> None:
         print(f"  {name}: {int(class_counts[i])} -> {class_weights_np[i]:.4f}")
 
     criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, EPOCHS + 1):
         model.train()
         running_loss = 0.0
         correct = 0
@@ -145,27 +138,27 @@ def main() -> None:
 
         epoch_loss = running_loss / total
         epoch_acc = correct / total
-        print(f"Epoch {epoch:02d}/{args.epochs} | loss={epoch_loss:.4f} | acc={epoch_acc:.4f}")
+        print(f"Epoch {epoch:02d}/{EPOCHS} | loss={epoch_loss:.4f} | acc={epoch_acc:.4f}")
 
-    args.model_path.parent.mkdir(parents=True, exist_ok=True)
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "input_shape": tuple(int(v) for v in input_shape),
             "label_names": [str(v) for v in label_names],
             "config": {
-                "hidden_1": int(args.hidden_1),
-                "hidden_2": int(args.hidden_2),
-                "batch_size": int(args.batch_size),
-                "epochs": int(args.epochs),
-                "learning_rate": float(args.learning_rate),
-                "seed": int(args.seed),
+                "hidden_1": int(HIDDEN_1),
+                "hidden_2": int(HIDDEN_2),
+                "batch_size": int(BATCH_SIZE),
+                "epochs": int(EPOCHS),
+                "learning_rate": float(LEARNING_RATE),
+                "seed": int(SEED),
             },
         },
-        args.model_path,
+        MODEL_PATH,
     )
 
-    print(f"Model saved to: {args.model_path}")
+    print(f"Model saved to: {MODEL_PATH}")
 
 
 if __name__ == "__main__":

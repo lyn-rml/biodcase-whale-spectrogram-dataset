@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 try:
@@ -14,6 +14,14 @@ except ImportError as exc:
 
 from preprocessing_wavfiles import preprocess_split
 from training import MLPClassifier, SpectrogramDataset
+
+# Hardcoded execution constants
+DATASET_ROOT = Path("biodcase_development_set")
+TRAIN_PREPROC_DIR = Path("preprocessed")
+MODEL_PATH = Path("preprocessed/mlp_whale_classifier.pt")
+WORK_DIR = Path("testing_artifacts")
+BATCH_SIZE = 256
+CONFUSION_MATRIX_IMAGE_PATH = Path("confusion_matrix_testing.png")
 
 
 def print_confusion_matrix(cm: np.ndarray, label_names: np.ndarray) -> None:
@@ -33,31 +41,47 @@ def print_confusion_matrix(cm: np.ndarray, label_names: np.ndarray) -> None:
         print(str(name).ljust(12) + row)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Preprocess validation split and evaluate saved model with confusion matrix.")
-    parser.add_argument("--dataset-root", type=Path, default=Path("biodcase_development_set"))
-    parser.add_argument("--train-preproc-dir", type=Path, default=Path("preprocessed"))
-    parser.add_argument("--model-path", type=Path, default=Path("preprocessed/mlp_whale_classifier.pt"))
-    parser.add_argument("--work-dir", type=Path, default=Path("testing_artifacts"))
-    parser.add_argument("--batch-size", type=int, default=256)
-    return parser.parse_args()
+def save_confusion_matrix_image(cm: np.ndarray, label_names: np.ndarray, output_path: Path) -> None:
+    cm_norm = cm / np.clip(cm.sum(axis=1, keepdims=True), 1, None)
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+    im = ax.imshow(cm_norm, cmap="Blues", vmin=0.0, vmax=1.0)
+    ax.set_title("Validation Confusion Matrix (Normalized)")
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("True")
+
+    indices = np.arange(len(label_names))
+    ax.set_xticks(indices)
+    ax.set_yticks(indices)
+    ax.set_xticklabels(label_names, rotation=45, ha="right")
+    ax.set_yticklabels(label_names)
+
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            text = f"{cm[i, j]}\n{cm_norm[i, j]:.2f}"
+            ax.text(j, i, text, ha="center", va="center", fontsize=8)
+
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    plt.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+    print(f"Saved confusion matrix image to: {output_path}")
 
 
 def main() -> None:
-    args = parse_args()
+    train_stats_path = TRAIN_PREPROC_DIR / "normalization_stats.npz"
+    train_label_names_path = TRAIN_PREPROC_DIR / "label_names.npy"
 
-    train_stats_path = args.train_preproc_dir / "normalization_stats.npz"
-    train_label_names_path = args.train_preproc_dir / "label_names.npy"
-
-    for path in [train_stats_path, train_label_names_path, args.model_path]:
+    for path in [train_stats_path, train_label_names_path, MODEL_PATH]:
         if not path.exists():
             raise FileNotFoundError(f"Missing required file: {path}")
 
-    testing_validation_dir = args.work_dir / "validation_testing"
+    testing_validation_dir = WORK_DIR / "validation_testing"
     testing_preproc_dir = testing_validation_dir / "testing_preprocessed"
 
     preprocess_result = preprocess_split(
-        dataset_root=args.dataset_root,
+        dataset_root=DATASET_ROOT,
         split="validation",
         events_dir=testing_validation_dir / "testing_waves",
         array_output_path=testing_validation_dir / "testing_spectrograms_arrays.npy",
@@ -71,7 +95,7 @@ def main() -> None:
     y_val = np.load(preprocess_result.labels_path)
     label_names = np.load(preprocess_result.label_names_path)
 
-    checkpoint = torch.load(args.model_path, map_location="cpu")
+    checkpoint = torch.load(MODEL_PATH, map_location="cpu")
     checkpoint_input_shape = tuple(int(v) for v in checkpoint["input_shape"])
     if tuple(X_val.shape[1:]) != checkpoint_input_shape:
         raise ValueError(
@@ -96,7 +120,7 @@ def main() -> None:
     dataset = SpectrogramDataset(X_val, y_val)
     loader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=BATCH_SIZE,
         shuffle=False,
         num_workers=0,
         pin_memory=(device.type == "cuda"),
@@ -117,6 +141,7 @@ def main() -> None:
     print(f"Validation samples: {len(y_val)}")
     print(f"Validation accuracy: {accuracy:.4f}")
     print_confusion_matrix(cm, label_names)
+    save_confusion_matrix_image(cm, label_names, CONFUSION_MATRIX_IMAGE_PATH)
 
 
 if __name__ == "__main__":

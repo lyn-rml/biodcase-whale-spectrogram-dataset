@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse
 import csv
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,6 +16,22 @@ NFFT = 512
 WINSIZE = 256
 OVERLAP_PERCENT = 98
 SCALE = "default"
+
+# Hardcoded execution constants
+DATASET_ROOT = Path("biodcase_development_set")
+SPLIT = "train"
+WORK_DIR = Path("artifacts")
+PREPROC_DIR = Path("preprocessed")
+
+FREQ_PERCENTILE = 90
+TIME_PERCENTILE = 90
+MAX_FREQ_BINS = 128
+MAX_TIME_BINS = 256
+ROUND_FREQ_TO = 8
+ROUND_TIME_TO = 16
+
+TRAIN_STATS_PATH: Path | None = None
+LABEL_NAMES_PATH: Path | None = None
 
 
 @dataclass
@@ -511,56 +526,29 @@ def preprocess_split(
     )
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Preprocess whale audio annotations into normalized spectrogram arrays.")
-    parser.add_argument("--dataset-root", type=Path, default=Path("biodcase_development_set"))
-    parser.add_argument("--split", type=str, default="train", choices=["train", "validation"])
-    parser.add_argument("--work-dir", type=Path, default=Path("artifacts"), help="Where split-level event/spectrogram artifacts are written.")
-    parser.add_argument("--preproc-dir", type=Path, default=None, help="Where X/y/label/stats files are written.")
-
-    parser.add_argument("--freq-percentile", type=int, default=90)
-    parser.add_argument("--time-percentile", type=int, default=90)
-    parser.add_argument("--max-freq-bins", type=int, default=128)
-    parser.add_argument("--max-time-bins", type=int, default=256)
-    parser.add_argument("--round-freq-to", type=int, default=8)
-    parser.add_argument("--round-time-to", type=int, default=16)
-
-    parser.add_argument("--train-stats-path", type=Path, default=None, help="Use train mean/std and target shape from this stats .npz.")
-    parser.add_argument("--label-names-path", type=Path, default=None, help="Use fixed label order from this .npy file.")
-    return parser.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
-
-    split_dir = args.work_dir / args.split
+    split_dir = WORK_DIR / SPLIT
     events_dir = split_dir / "waves"
     array_output_path = split_dir / "spectrograms_arrays.npy"
     index_output_path = split_dir / "spectrograms_arrays_index.csv"
 
-    if args.preproc_dir is None:
-        if args.split == "train":
-            preproc_dir = Path("preprocessed")
-        else:
-            preproc_dir = split_dir / "preprocessed"
-    else:
-        preproc_dir = args.preproc_dir
+    preproc_dir = PREPROC_DIR
 
     preprocess_split(
-        dataset_root=args.dataset_root,
-        split=args.split,
+        dataset_root=DATASET_ROOT,
+        split=SPLIT,
         events_dir=events_dir,
         array_output_path=array_output_path,
         index_output_path=index_output_path,
         preproc_dir=preproc_dir,
-        freq_percentile=args.freq_percentile,
-        time_percentile=args.time_percentile,
-        max_freq_bins=args.max_freq_bins,
-        max_time_bins=args.max_time_bins,
-        round_freq_to=args.round_freq_to,
-        round_time_to=args.round_time_to,
-        train_stats_path=args.train_stats_path,
-        label_names_path=args.label_names_path,
+        freq_percentile=FREQ_PERCENTILE,
+        time_percentile=TIME_PERCENTILE,
+        max_freq_bins=MAX_FREQ_BINS,
+        max_time_bins=MAX_TIME_BINS,
+        round_freq_to=ROUND_FREQ_TO,
+        round_time_to=ROUND_TIME_TO,
+        train_stats_path=TRAIN_STATS_PATH,
+        label_names_path=LABEL_NAMES_PATH,
     )
 
 
