@@ -45,6 +45,8 @@ class PreprocessResult:
     labels_path: Path
     label_names_path: Path
     stats_path: Path
+    frequencies_path: Path
+    frequencies_stats_path: Path
     num_samples: int
     target_freq_bins: int
     target_time_bins: int
@@ -430,6 +432,55 @@ def normalize_arrays(
     return mean, std
 
 
+def extract_and_save_frequency_features(
+    rows: list[dict[str, str]],
+    freqs_path: Path,
+    freqs_stats_path: Path,
+    provided_freqs_stats: tuple[float, float, float, float] | None = None,
+) -> tuple[np.ndarray, tuple[float, float, float, float]]:
+    """
+    Extract low and high frequency from index rows and save as normalized features.
+    
+    Returns:
+        - Frequency features array of shape (num_samples, 2)
+        - Frequency statistics (low_min, low_max, high_min, high_max) for normalization
+    """
+    num_samples = len(rows)
+    frequencies = np.empty((num_samples, 2), dtype=np.float32)
+    
+    for i, row in enumerate(rows):
+        low_freq = float(row["low_frequency"])
+        high_freq = float(row["high_frequency"])
+        frequencies[i] = [low_freq, high_freq]
+    
+    # Compute or use provided frequency statistics
+    if provided_freqs_stats is None:
+        low_min = float(frequencies[:, 0].min())
+        low_max = float(frequencies[:, 0].max())
+        high_min = float(frequencies[:, 1].min())
+        high_max = float(frequencies[:, 1].max())
+    else:
+        low_min, low_max, high_min, high_max = provided_freqs_stats
+    
+    # Normalize frequencies to [0, 1]
+    frequencies[:, 0] = (frequencies[:, 0] - low_min) / (low_max - low_min + 1e-9)
+    frequencies[:, 1] = (frequencies[:, 1] - high_min) / (high_max - high_min + 1e-9)
+    
+    freqs_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(freqs_path, frequencies)
+    
+    freqs_stats_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        freqs_stats_path,
+        low_min=np.float32(low_min),
+        low_max=np.float32(low_max),
+        high_min=np.float32(high_min),
+        high_max=np.float32(high_max),
+    )
+    
+    return frequencies, (low_min, low_max, high_min, high_max)
+
+
 def preprocess_split(
     dataset_root: Path,
     split: str,
@@ -445,6 +496,7 @@ def preprocess_split(
     round_time_to: int = 16,
     train_stats_path: Path | None = None,
     label_names_path: Path | None = None,
+    train_freqs_stats_path: Path | None = None,
 ) -> PreprocessResult:
     preproc_dir.mkdir(parents=True, exist_ok=True)
 
@@ -453,6 +505,8 @@ def preprocess_split(
     labels_path = preproc_dir / "y_labels.npy"
     out_label_names_path = preproc_dir / "label_names.npy"
     stats_path = preproc_dir / "normalization_stats.npz"
+    frequencies_path = preproc_dir / "frequencies.npy"
+    frequencies_stats_path = preproc_dir / "frequencies_stats.npz"
 
     extracted = extract_events_to_wavs(dataset_root, split, events_dir)
     print(f"Extracted event WAV files: {extracted}")
@@ -465,6 +519,7 @@ def preprocess_split(
     fixed_target_shape: tuple[int, int] | None = None
     provided_mean_std: tuple[float, float] | None = None
     fixed_label_names: Sequence[str] | None = None
+    provided_freqs_stats: tuple[float, float, float, float] | None = None
 
     if train_stats_path is not None:
         stats = np.load(train_stats_path)
@@ -473,6 +528,15 @@ def preprocess_split(
 
     if label_names_path is not None:
         fixed_label_names = [str(v) for v in np.load(label_names_path)]
+
+    if train_freqs_stats_path is not None:
+        freqs_stats = np.load(train_freqs_stats_path)
+        provided_freqs_stats = (
+            float(freqs_stats["low_min"]),
+            float(freqs_stats["low_max"]),
+            float(freqs_stats["high_min"]),
+            float(freqs_stats["high_max"]),
+        )
 
     target_shape = fixed_target_shape or select_target_shape(
         rows=rows,
@@ -504,9 +568,17 @@ def preprocess_split(
         provided_mean_std=provided_mean_std,
     )
 
+    frequencies, freqs_stats = extract_and_save_frequency_features(
+        rows=rows,
+        freqs_path=frequencies_path,
+        freqs_stats_path=frequencies_stats_path,
+        provided_freqs_stats=provided_freqs_stats,
+    )
+
     print(f"Saved labels: {labels_path}")
     print(f"Saved class names: {out_label_names_path}")
     print(f"Saved normalized arrays: {normalized_path}")
+    print(f"Saved frequency features: {frequencies_path}")
     print(f"Normalization mean={mean:.6f}, std={std:.6f}")
     print(f"Classes: {list(label_names)}")
 
@@ -520,6 +592,8 @@ def preprocess_split(
         labels_path=labels_path,
         label_names_path=out_label_names_path,
         stats_path=stats_path,
+        frequencies_path=frequencies_path,
+        frequencies_stats_path=frequencies_stats_path,
         num_samples=num_samples,
         target_freq_bins=target_shape[0],
         target_time_bins=target_shape[1],

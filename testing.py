@@ -72,6 +72,7 @@ def save_confusion_matrix_image(cm: np.ndarray, label_names: np.ndarray, output_
 def main() -> None:
     train_stats_path = TRAIN_PREPROC_DIR / "normalization_stats.npz"
     train_label_names_path = TRAIN_PREPROC_DIR / "label_names.npy"
+    train_freqs_stats_path = TRAIN_PREPROC_DIR / "frequencies_stats.npz"
 
     for path in [train_stats_path, train_label_names_path, MODEL_PATH]:
         if not path.exists():
@@ -89,11 +90,20 @@ def main() -> None:
         preproc_dir=testing_preproc_dir,
         train_stats_path=train_stats_path,
         label_names_path=train_label_names_path,
+        train_freqs_stats_path=train_freqs_stats_path if train_freqs_stats_path.exists() else None,
     )
 
     X_val = np.load(preprocess_result.normalized_path, mmap_mode="r")
     y_val = np.load(preprocess_result.labels_path)
     label_names = np.load(preprocess_result.label_names_path)
+    
+    # Load frequency features if available
+    frequencies_val = None
+    use_frequencies = False
+    if preprocess_result.frequencies_path.exists():
+        frequencies_val = np.load(preprocess_result.frequencies_path)
+        use_frequencies = True
+        print(f"Loaded validation frequency features from {preprocess_result.frequencies_path}")
 
     checkpoint = torch.load(MODEL_PATH, map_location="cpu")
     checkpoint_input_shape = tuple(int(v) for v in checkpoint["input_shape"])
@@ -106,6 +116,13 @@ def main() -> None:
     if model_label_names != [str(v) for v in label_names]:
         raise ValueError("Label order mismatch between model checkpoint and validation preprocessing.")
 
+    # Check if model uses frequencies
+    checkpoint_use_frequencies = checkpoint.get("use_frequencies", False)
+    if checkpoint_use_frequencies != use_frequencies:
+        print(f"Warning: Model uses_frequencies={checkpoint_use_frequencies}, but data has frequencies={use_frequencies}")
+        if checkpoint_use_frequencies and not use_frequencies:
+            raise ValueError("Model expects frequency features but they are not available in validation data.")
+
     num_classes = len(label_names)
     input_dim = int(np.prod(checkpoint_input_shape))
     config = checkpoint.get("config", {})
@@ -113,11 +130,11 @@ def main() -> None:
     hidden_2 = int(config.get("hidden_2", 128))
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MLPClassifier(input_dim, num_classes, hidden_1=hidden_1, hidden_2=hidden_2).to(device)
+    model = MLPClassifier(input_dim, num_classes, hidden_1=hidden_1, hidden_2=hidden_2, use_frequencies=use_frequencies).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
 
-    dataset = SpectrogramDataset(X_val, y_val)
+    dataset = SpectrogramDataset(X_val, y_val, frequencies_val)
     loader = DataLoader(
         dataset,
         batch_size=BATCH_SIZE,
@@ -129,11 +146,18 @@ def main() -> None:
     cm = np.zeros((num_classes, num_classes), dtype=np.int64)
 
     with torch.no_grad():
-        for xb, yb in loader:
+        for batch_data in loader:
+            if use_frequencies:
+                xb, freq_b, yb = batch_data
+                freq_b = freq_b.to(device, non_blocking=True)
+            else:
+                xb, yb = batch_data
+                freq_b = None
+            
             xb = xb.to(device, non_blocking=True)
             yb = yb.to(device, non_blocking=True)
 
-            preds = model(xb).argmax(dim=1).cpu().numpy()
+            preds = model(xb, freq_b).argmax(dim=1).cpu().numpy() if use_frequencies else model(xb).argmax(dim=1).cpu().numpy()
             true = yb.cpu().numpy()
             np.add.at(cm, (true, preds), 1)
 
